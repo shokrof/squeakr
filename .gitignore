@@ -27,3 +27,9 @@
 *.exe
 *.out
 *.app
+
+squeakr-count
+
+squeakr-inner-prod
+
+squeakr-query
