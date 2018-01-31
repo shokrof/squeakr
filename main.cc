@@ -60,9 +60,14 @@ using namespace kmercounting;
 typedef struct {
 	QF *local_qf;
 	QF *main_qf;
+	QF *main_qfDisk;
 	uint32_t count {0};
 	uint32_t ksize {28};
+
 }flush_object;
+
+bool main_qf_lock=false;
+uint64_t main_qf_count=0;
 
 struct file_pointer {
 	std::unique_ptr<reader> freader{nullptr};
@@ -221,6 +226,27 @@ static bool fastq_read_parts(int mode, file_pointer *fp)
 	return true;
 }
 
+/* dump the contents of  the main QF  int Disk QF*/
+static void dump_main_qf_to_disk(flush_object *obj)
+{
+	
+	main_qf_lock=true;
+cout<<"Dump"<<endl;
+	QFi cfi;
+	if (qf_iterator(obj->main_qf, &cfi, 0)) {
+		do {
+			uint64_t key = 0, value = 0, count = 0;
+			qfi_get(&cfi, &key, &value, &count);
+			qf_insert(obj->main_qfDisk, key, 0, count, true, true);
+		} while (!qfi_next(&cfi));
+		qf_reset(obj->main_qf);
+		main_qf_count=0;
+	}
+
+	main_qf_lock=false;
+}
+
+
 /* dump the contents of a local QF into the main QF */
 static void dump_local_qf_to_main(flush_object *obj)
 {
@@ -231,10 +257,18 @@ static void dump_local_qf_to_main(flush_object *obj)
 			uint64_t key = 0, value = 0, count = 0;
 			qfi_get(&local_cfi, &key, &value, &count);
 			qf_insert(obj->main_qf, key, 0, count, true, true);
+			main_qf_count++;
+			double loadFactor=(double)main_qf_count/
+																		(double)obj->main_qf->metadata->nslots;
+			if(loadFactor>0.5){
+					dump_main_qf_to_disk(obj);
+			}
+
 		} while (!qfi_next(&local_cfi));
 		qf_reset(obj->local_qf);
 	}
 }
+
 
 /* convert a chunk of the fastq file into kmers */
 void reads_to_kmers(chunk &c, flush_object *obj)
@@ -286,7 +320,7 @@ start_read:
 			 * If lock can't be accuired in the first attempt then
 			 * insert the item in the local QF.
 			 */
-			if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1,
+			if (!main_qf_lock && !qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1,
 										 true, false)) {
 				qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1,
 									false, false);
@@ -296,6 +330,16 @@ start_read:
 					dump_local_qf_to_main(obj);
 					obj->count = 0;
 				}
+			}
+			else{
+					// kmer is inserted to main qf.
+					// Check if the main qf(memory) is full and dump it
+					main_qf_count++;
+					double loadFactor=(double)main_qf_count/
+																						(double)obj->main_qf->metadata->nslots;
+					if(loadFactor>0.5){
+						dump_main_qf_to_disk(obj);
+					}
 			}
 			//cout<< "X " << bitset<64>(first)<<endl;
 
@@ -328,7 +372,7 @@ start_read:
 				 * If lock can't be accuired in the first attempt then
 				 * insert the item in the local QF.
 				 */
-				if (!qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true,
+				if (!main_qf_lock && !qf_insert(obj->main_qf, item%obj->main_qf->metadata->range, 0, 1, true,
 											 false)) {
 					qf_insert(obj->local_qf, item%obj->local_qf->metadata->range, 0, 1, false,
 										false);
@@ -338,6 +382,17 @@ start_read:
 						dump_local_qf_to_main(obj);
 						obj->count = 0;
 					}
+				}
+				else{
+						// kmer is inserted to main qf.
+						// Check if the main qf(memory) is full and dump it
+						main_qf_count++;
+						double loadFactor=(double)main_qf_count/
+																							(double)obj->main_qf->metadata->nslots;
+
+						if(loadFactor>0.5){
+							dump_main_qf_to_disk(obj);
+						}
 				}
 
 				//cout<<bitset<64>(next)<<endl;
@@ -426,9 +481,7 @@ bool getFileReader(int mode, const char* fastq_file, reader* file_reader)
 /* main method */
 int main(int argc, char *argv[])
 {
-	QF cf;
-	QFi cfi;
-	QF local_qfs[50];
+
 
   enum class file_type {fastq, gzip, bzip2};
 
@@ -436,6 +489,7 @@ int main(int argc, char *argv[])
   int mode = 0;
   int ksize;
   int qbits;
+	int qbitsM;
   int numthreads;
   std::string prefix = "./";
   std::vector<std::string> filenames;
@@ -446,7 +500,8 @@ int main(int argc, char *argv[])
                       required("-g").set(in_type, file_type::gzip) % "gzip compressed fastq",
                       required("-b").set(in_type, file_type::bzip2) % "bzip2 compressed fastq") % "format of the input",
               required("-k","--kmer") & value("k-size", ksize) % "length of k-mers to count",
-              required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF",
+              required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF on disk",
+							required("-m","--log-slots-memory") & value("log-slots-memory", qbitsM) % "log of number of slots in the CQF on the memory",
               required("-t","--threads") & value("num-threads", numthreads) % "number of threads to use to count",
               option("-o","--output-dir") & value("out-dir", prefix) % "directory where output should be written (default = \"./\")",
               values("files", filenames) % "list of files to be counted",
@@ -459,7 +514,6 @@ int main(int argc, char *argv[])
     std::cout << make_man_page(cli, argv[0]) << "\n";
     return 1;
   }
-
   switch (in_type) {
   case file_type::fastq: mode = 0; break;
   case file_type::gzip: mode = 1; break;
@@ -485,7 +539,7 @@ int main(int argc, char *argv[])
 	int qbits = atoi(argv[3]);
 	int numthreads = atoi(argv[4]);
   */
-	int num_hash_bits = qbits+8;	// we use 8 bits for remainders in the main QF
+
 	string ser_ext(".ser");
 	string log_ext(".log");
 	string cluster_ext(".cluster");
@@ -517,20 +571,27 @@ int main(int argc, char *argv[])
 	string ds_file =      prefix + filename + ser_ext;
 	string log_file =     prefix + filename + log_ext;
 	string cluster_file = prefix + filename + cluster_ext;
-	string freq_file =    prefix + filename + freq_ext;
+	string freq_file_name =    prefix + filename + freq_ext;
 
+	QF cf;
+	QF cfM;
+	QFi cfi;
+	QF local_qfs[50];
 	uint32_t seed = 2038074761;
+	int num_hash_bits = qbits+8;	// we use 8 bits for remainders in the main QF
 	//Initialize the main  QF
-	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, true, "", seed);
+	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, false, ds_file.c_str(), seed);
+	qf_init(&cfM, (1ULL<<qbitsM), num_hash_bits, 0, true, "", seed);
 
 	boost::thread_group prod_threads;
-
+	flush_object* obj;
 	for (int i = 0; i < numthreads; i++) {
 		qf_init(&local_qfs[i], (1ULL << QBITS_LOCAL_QF), num_hash_bits, 0, true,
 						"", seed);
-		flush_object* obj = (flush_object*)malloc(sizeof(flush_object));
+		obj = (flush_object*)malloc(sizeof(flush_object));
 		obj->local_qf = &local_qfs[i];
-		obj->main_qf = &cf;
+		obj->main_qf = &cfM;
+		obj->main_qfDisk=&cf;
 		obj->ksize = ksize;
 		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod,
 																							obj));
@@ -539,20 +600,24 @@ int main(int argc, char *argv[])
 	cout << "Reading from the fastq file and inserting in the QF" << endl;
 	gettimeofday(&start1, &tzp);
 	prod_threads.join_all();
-	qf_serialize(&cf, ds_file.c_str());
+  dump_main_qf_to_disk(obj);
+	//qf_serialize(&cf, ds_file.c_str()); no need because I am using mmap
 	gettimeofday(&end1, &tzp);
 	print_time_elapsed("", &start1, &end1);
 
+	qf_destroy(&cfM, true);
+
+
 	cout << "Calc freq distribution: " << endl;
-	//ofstream freq_file;
-	//freq_file.open(freq_file.c_str());
+	ofstream freq_file;
+	freq_file.open(freq_file_name.c_str());
 	uint64_t max_cnt = 0;
 	qf_iterator(&cf, &cfi, 0);
 	gettimeofday(&start2, &tzp);
 	do {
 		uint64_t key = 0, value = 0, count = 0;
 		qfi_get(&cfi, &key, &value, &count);
-		//freq_file << key << " " << count << endl;
+		freq_file << key << " " << count << endl;
 		if (max_cnt < count)
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
@@ -560,7 +625,7 @@ int main(int argc, char *argv[])
 	print_time_elapsed("", &start2, &end2);
 
 	cout << "Maximum freq: " << max_cnt << endl;
-	//freq_file.close();
+	freq_file.close();
 
 	cout << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
 	cout << "Total num elems: " << cf.metadata->nelts << endl;
@@ -587,15 +652,14 @@ int main(int argc, char *argv[])
 	cluster_len_log.open(cluster_file.c_str());
 	cluster_len_log << "StartingIndex\tLength" << endl;
 	for (uint32_t i = 0; i < cfi.num_clusters; i++)
-		cluster_len_log << cfi.c_info[i].start_index << "\t\t" << 
+		cluster_len_log << cfi.c_info[i].start_index << "\t\t" <<
 			cfi.c_info[i].length << endl;
 	cluster_len_log.close();
 
 #endif
 
 	//destroy the QF and reclaim the memory
-	qf_destroy(&cf, true);
+	qf_destroy(&cf, false);
 
 	return 0;
 }
-
