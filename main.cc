@@ -3,7 +3,7 @@
  *
  *       Filename:  main.cc
  *
- *    Description:  
+ *    Description:
  *
  *        Version:  1.0
  *        Created:  05/06/2016 09:56:26 PM
@@ -103,7 +103,7 @@ void print_time_elapsed(string desc, struct timeval* start, struct timeval* end)
 	elapsed.tv_usec = end->tv_usec - start->tv_usec;
 	elapsed.tv_sec = end->tv_sec - start->tv_sec;
 	float time_elapsed = (elapsed.tv_sec * 1000000 + elapsed.tv_usec)/1000000.f;
-	cout << desc << "Total Time Elapsed: " << to_string(time_elapsed) << 
+	cout << desc << "Total Time Elapsed: " << to_string(time_elapsed) <<
 		"seconds" << endl;
 }
 
@@ -162,7 +162,7 @@ static bool fastq_read_parts(int mode, file_pointer *fp)
 	else if (mode == 2)
 		readed = BZ2_bzRead(&file_reader.bzerror, file_reader.in_bzip2,
 												part+part_filled, (int) part_size);
-	else 
+	else
 		readed = 0;
 
 	int64_t total_filled = part_filled + readed;
@@ -361,7 +361,7 @@ next_read:
 /* read a part of the fastq file, parse it, convert the reads to kmers, and
  * insert them in the CQF
  */
-static bool fastq_to_uint64kmers_prod(flush_object* obj) 
+static bool fastq_to_uint64kmers_prod(flush_object* obj)
 {
 	file_pointer* fp;
 
@@ -396,7 +396,7 @@ static bool fastq_to_uint64kmers_prod(flush_object* obj)
 	return true;
 }
 
-bool getFileReader(int mode, const char* fastq_file, reader* file_reader) 
+bool getFileReader(int mode, const char* fastq_file, reader* file_reader)
 {
 	uint64_t gzip_buffer_size = 1ULL << 26;
 	uint64_t bzip2_buffer_size = 1ULL << 26;
@@ -517,7 +517,7 @@ int main(int argc, char *argv[])
 	string ds_file =      prefix + filename + ser_ext;
 	string log_file =     prefix + filename + log_ext;
 	string cluster_file = prefix + filename + cluster_ext;
-	string freq_file =    prefix + filename + freq_ext;
+	string freq_filename =    prefix + filename + freq_ext;
 
 	uint32_t seed = 2038074761;
 	//Initialize the main  QF
@@ -544,15 +544,15 @@ int main(int argc, char *argv[])
 	print_time_elapsed("", &start1, &end1);
 
 	cout << "Calc freq distribution: " << endl;
-	//ofstream freq_file;
-	//freq_file.open(freq_file.c_str());
+	ofstream freq_file;
+	freq_file.open(freq_filename.c_str());
 	uint64_t max_cnt = 0;
 	qf_iterator(&cf, &cfi, 0);
 	gettimeofday(&start2, &tzp);
 	do {
 		uint64_t key = 0, value = 0, count = 0;
 		qfi_get(&cfi, &key, &value, &count);
-		//freq_file << key << " " << count << endl;
+		freq_file << key << " " << count << endl;
 		if (max_cnt < count)
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
@@ -571,9 +571,9 @@ int main(int argc, char *argv[])
 	wait_time_log << "Id\tTotalTimeSingle\tTotalTimeSpinning\tNumLocks\tNumSingleAttempt\tPercentageSpinningTimes"
 		<< endl;
 	for (uint32_t i=0; i<cf.num_locks; i++)
-		wait_time_log << i << "\t" << cf.wait_times[i].total_time_single << "\t\t\t" 
-			<< cf.wait_times[i].total_time_spinning << "\t\t\t" 
-			<< cf.wait_times[i].locks_taken << "\t\t\t" 
+		wait_time_log << i << "\t" << cf.wait_times[i].total_time_single << "\t\t\t"
+			<< cf.wait_times[i].total_time_spinning << "\t\t\t"
+			<< cf.wait_times[i].locks_taken << "\t\t\t"
 			<< cf.wait_times[i].locks_acquired_single_attempt << "\t\t\t"
 			<< ((double)(cf.wait_times[i].locks_taken
 									 -cf.wait_times[i].locks_acquired_single_attempt)
@@ -587,7 +587,7 @@ int main(int argc, char *argv[])
 	cluster_len_log.open(cluster_file.c_str());
 	cluster_len_log << "StartingIndex\tLength" << endl;
 	for (uint32_t i = 0; i < cfi.num_clusters; i++)
-		cluster_len_log << cfi.c_info[i].start_index << "\t\t" << 
+		cluster_len_log << cfi.c_info[i].start_index << "\t\t" <<
 			cfi.c_info[i].length << endl;
 	cluster_len_log.close();
 
@@ -598,4 +598,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
