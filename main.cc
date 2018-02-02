@@ -66,8 +66,10 @@ typedef struct {
 
 }flush_object;
 
-bool main_qf_lock=false;
-uint64_t main_qf_count=0;
+volatile bool main_qf_lock=false;
+volatile uint64_t main_qf_count=0;
+
+ #define Max_Main_QF_Load_Factor 0.5
 
 struct file_pointer {
 	std::unique_ptr<reader> freader{nullptr};
@@ -225,15 +227,30 @@ static bool fastq_read_parts(int mode, file_pointer *fp)
 
 	return true;
 }
+static inline bool qf_spin_lock(volatile int *lock, bool flag_spin)
+{
+	if (!flag_spin) {
+		return !__sync_lock_test_and_set(lock, 1);
+	} else {
+		while (__sync_lock_test_and_set(lock, 1))
+			while (*lock);
+		return true;
+	}
 
+	return false;
+}
 /* dump the contents of  the main QF  int Disk QF*/
 static void dump_main_qf_to_disk(flush_object *obj)
 {
-	
+	qf_spin_lock((int*)&main_qf_lock,true);
 	main_qf_lock=true;
-cout<<"Dump"<<endl;
 	QFi cfi;
+	if(qf_count_key_value(obj->main_qf,16770041,0)==1)
+	{
+			qf_serialize(obj->main_qf, "buggycqf.ser");
+	}
 	if (qf_iterator(obj->main_qf, &cfi, 0)) {
+		int countt=0;
 		do {
 			uint64_t key = 0, value = 0, count = 0;
 			qfi_get(&cfi, &key, &value, &count);
@@ -256,11 +273,13 @@ static void dump_local_qf_to_main(flush_object *obj)
 		do {
 			uint64_t key = 0, value = 0, count = 0;
 			qfi_get(&local_cfi, &key, &value, &count);
+			qf_spin_lock((int*)&main_qf_lock,true);
+			main_qf_lock=false;
 			qf_insert(obj->main_qf, key, 0, count, true, true);
 			main_qf_count++;
-			double loadFactor=(double)main_qf_count/
+			double loadFactor=(double)obj->main_qf->metadata->noccupied_slots/
 																		(double)obj->main_qf->metadata->nslots;
-			if(loadFactor>0.5){
+			if(loadFactor>Max_Main_QF_Load_Factor){
 					dump_main_qf_to_disk(obj);
 			}
 
@@ -331,13 +350,13 @@ start_read:
 					obj->count = 0;
 				}
 			}
-			else{
+			else if(!main_qf_lock){
 					// kmer is inserted to main qf.
 					// Check if the main qf(memory) is full and dump it
 					main_qf_count++;
-					double loadFactor=(double)main_qf_count/
+					double loadFactor=(double)obj->main_qf->metadata->noccupied_slots/
 																						(double)obj->main_qf->metadata->nslots;
-					if(loadFactor>0.5){
+					if(loadFactor>Max_Main_QF_Load_Factor){
 						dump_main_qf_to_disk(obj);
 					}
 			}
@@ -384,13 +403,14 @@ start_read:
 					}
 				}
 				else{
+				else if(!main_qf_lock){
 						// kmer is inserted to main qf.
 						// Check if the main qf(memory) is full and dump it
 						main_qf_count++;
-						double loadFactor=(double)main_qf_count/
+						double loadFactor=(double)obj->main_qf->metadata->noccupied_slots/
 																							(double)obj->main_qf->metadata->nslots;
 
-						if(loadFactor>0.5){
+						if(loadFactor>Max_Main_QF_Load_Factor){
 							dump_main_qf_to_disk(obj);
 						}
 				}
