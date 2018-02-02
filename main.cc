@@ -513,53 +513,7 @@ int main(int argc, char *argv[])
   std::string prefix = "./";
   std::vector<std::string> filenames;
   using namespace clipp;
-  auto cli = (
-              one_of(
-                      required("-f").set(in_type, file_type::fastq) % "plain fastq",
-                      required("-g").set(in_type, file_type::gzip) % "gzip compressed fastq",
-                      required("-b").set(in_type, file_type::bzip2) % "bzip2 compressed fastq") % "format of the input",
-              required("-k","--kmer") & value("k-size", ksize) % "length of k-mers to count",
-              required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF on disk",
-							required("-m","--log-slots-memory") & value("log-slots-memory", qbitsM) % "log of number of slots in the CQF on the memory",
-              required("-t","--threads") & value("num-threads", numthreads) % "number of threads to use to count",
-              option("-o","--output-dir") & value("out-dir", prefix) % "directory where output should be written (default = \"./\")",
-              values("files", filenames) % "list of files to be counted",
-              option("-h", "--help")      % "show help"
-              );
-
-  auto res = parse(argc, argv, cli);
-
-  if (!res) {
-    std::cout << make_man_page(cli, argv[0]) << "\n";
-    return 1;
-  }
-  switch (in_type) {
-  case file_type::fastq: mode = 0; break;
-  case file_type::gzip: mode = 1; break;
-  case file_type::bzip2: mode = 2; break;
-  }
-  /*
-  if (argc == 2) {
-		string arg_help(argv[1]);
-		if (arg_help.compare("-h") != 0 || arg_help.compare("-help") != 0) {
-			cout << "./squeakr-count [OPTIONS]" << endl
-				   << "file format   : 0 - plain fastq, 1 - gzip compressed fastq, 2 - bzip2 compressed fastq" << endl
-					 << "CQF size      : the log of the number of slots in the CQF" << endl
-					 << "num of threads: number of threads to count" << endl
-					 << "file(s)       : \"filename\" or \"dirname/\" for all the files in a directory" << endl;
-			exit(0);
-		}
-	}
-  */
-
-  /*
-	int mode = atoi(argv[1]);
-	int ksize = atoi(argv[2]);
-	int qbits = atoi(argv[3]);
-	int numthreads = atoi(argv[4]);
-  */
-
-	string ser_ext(".ser");
+  string ser_ext(".ser");
 	string log_ext(".log");
 	string cluster_ext(".cluster");
 	string freq_ext(".freq");
@@ -567,30 +521,6 @@ int main(int argc, char *argv[])
 	struct timezone tzp;
 	uint32_t OVERHEAD_SIZE = 65535;
 
-  for( auto& fn : filenames ) {
-		auto* fr = new reader;
-		if (getFileReader(mode, fn.c_str(), fr)) {
-			file_pointer* fp = new file_pointer;
-			fp->mode = mode;
-			fp->freader.reset(fr);
-			fp->part_buffer = new char[OVERHEAD_SIZE];
-			ip_files.push(fp);
-			num_files++;
-		} else {
-			delete fr;
-		}
-	}
-
-  string filepath(filenames.front());
-  auto const pos = filepath.find_last_of('/');
-  string filename = filepath.substr(pos+1);
-  if (prefix.back() != '/') {
-    prefix += '/';
-  }
-	string ds_file =      prefix + filename + ser_ext;
-	string log_file =     prefix + filename + log_ext;
-	string cluster_file = prefix + filename + cluster_ext;
-	string freq_file_name =    prefix + filename + freq_ext;
 
 	QF cf;
 	QF cfM;
@@ -599,37 +529,11 @@ int main(int argc, char *argv[])
 	uint32_t seed = 2038074761;
 	int num_hash_bits = qbits+8;	// we use 8 bits for remainders in the main QF
 	//Initialize the main  QF
-	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, false, ds_file.c_str(), seed);
-	qf_init(&cfM, (1ULL<<qbitsM), num_hash_bits, 0, true, "", seed);
-
-	boost::thread_group prod_threads;
-	flush_object* obj;
-	for (int i = 0; i < numthreads; i++) {
-		qf_init(&local_qfs[i], (1ULL << QBITS_LOCAL_QF), num_hash_bits, 0, true,
-						"", seed);
-		obj = (flush_object*)malloc(sizeof(flush_object));
-		obj->local_qf = &local_qfs[i];
-		obj->main_qf = &cfM;
-		obj->main_qfDisk=&cf;
-		obj->ksize = ksize;
-		prod_threads.add_thread(new boost::thread(fastq_to_uint64kmers_prod,
-																							obj));
-	}
-
-	cout << "Reading from the fastq file and inserting in the QF" << endl;
-	gettimeofday(&start1, &tzp);
-	prod_threads.join_all();
-  dump_main_qf_to_disk(obj);
-	//qf_serialize(&cf, ds_file.c_str()); no need because I am using mmap
-	gettimeofday(&end1, &tzp);
-	print_time_elapsed("", &start1, &end1);
-
-	qf_destroy(&cfM, true);
-
-
+	qf_deserialize(&cf,"buggycqf.ser");
+	cout<<"Count of 16770041 = "<<qf_count_key_value(&cf,16770041,0)<<endl;
 	cout << "Calc freq distribution: " << endl;
 	ofstream freq_file;
-	freq_file.open(freq_file_name.c_str());
+	freq_file.open("buggycqf.freq");
 	uint64_t max_cnt = 0;
 	qf_iterator(&cf, &cfi, 0);
 	gettimeofday(&start2, &tzp);
@@ -649,33 +553,6 @@ int main(int argc, char *argv[])
 	cout << "Num distinct elem: " << cf.metadata->ndistinct_elts << endl;
 	cout << "Total num elems: " << cf.metadata->nelts << endl;
 
-#ifdef LOG_WAIT_TIME
-	ofstream wait_time_log;
-	wait_time_log.open(log_file.c_str());
-	wait_time_log << "Id\tTotalTimeSingle\tTotalTimeSpinning\tNumLocks\tNumSingleAttempt\tPercentageSpinningTimes"
-		<< endl;
-	for (uint32_t i=0; i<cf.num_locks; i++)
-		wait_time_log << i << "\t" << cf.wait_times[i].total_time_single << "\t\t\t"
-			<< cf.wait_times[i].total_time_spinning << "\t\t\t"
-			<< cf.wait_times[i].locks_taken << "\t\t\t"
-			<< cf.wait_times[i].locks_acquired_single_attempt << "\t\t\t"
-			<< ((double)(cf.wait_times[i].locks_taken
-									 -cf.wait_times[i].locks_acquired_single_attempt)
-					/(double)cf.wait_times[i].locks_taken)*100
-			<< endl;
-	wait_time_log.close();
-#endif
-
-#ifdef LOG_CLUSTER_LENGTH
-	ofstream cluster_len_log;
-	cluster_len_log.open(cluster_file.c_str());
-	cluster_len_log << "StartingIndex\tLength" << endl;
-	for (uint32_t i = 0; i < cfi.num_clusters; i++)
-		cluster_len_log << cfi.c_info[i].start_index << "\t\t" <<
-			cfi.c_info[i].length << endl;
-	cluster_len_log.close();
-
-#endif
 
 	//destroy the QF and reclaim the memory
 	qf_destroy(&cf, false);
