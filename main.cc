@@ -69,7 +69,7 @@ typedef struct {
 volatile bool main_qf_lock=false;
 volatile uint64_t main_qf_count=0;
 
- #define Max_Main_QF_Load_Factor 0.5
+ #define Max_Main_QF_Load_Factor 0.9
 
 struct file_pointer {
 	std::unique_ptr<reader> freader{nullptr};
@@ -110,8 +110,8 @@ void print_time_elapsed(string desc, struct timeval* start, struct timeval* end)
 	elapsed.tv_usec = end->tv_usec - start->tv_usec;
 	elapsed.tv_sec = end->tv_sec - start->tv_sec;
 	float time_elapsed = (elapsed.tv_sec * 1000000 + elapsed.tv_usec)/1000000.f;
-	cout << desc << "Total Time Elapsed: " << to_string(time_elapsed) <<
-		"seconds" << endl;
+	cout << desc << "\t" << to_string(time_elapsed) <<
+		" seconds" << endl;
 }
 
 /* check if it's the end of the file. */
@@ -239,16 +239,14 @@ static inline bool qf_spin_lock(volatile int *lock, bool flag_spin)
 
 	return false;
 }
+uint64_t nMerges=0;
 /* dump the contents of  the main QF  int Disk QF*/
 static void dump_main_qf_to_disk(flush_object *obj)
 {
 	qf_spin_lock((int*)&main_qf_lock,true);
 	main_qf_lock=true;
+	nMerges++;
 	QFi cfi;
-	if(qf_count_key_value(obj->main_qf,16770041,0)==1)
-	{
-			qf_serialize(obj->main_qf, "buggycqf.ser");
-	}
 	if (qf_iterator(obj->main_qf, &cfi, 0)) {
 
 		do {
@@ -332,8 +330,10 @@ start_read:
 				item = first_rev;
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
-			item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
-																		 obj->local_qf->metadata->seed);
+			//item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
+				//														 obj->local_qf->metadata->seed);
+
+			item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
 			/*
 			 * first try and insert in the main QF.
 			 * If lock can't be accuired in the first attempt then
@@ -382,9 +382,11 @@ start_read:
 					item = next_rev;
 
 			// hash the kmer using murmurhash/xxHash before adding to the list
-				item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
-																			 obj->local_qf->metadata->seed);
+				//item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
+				//															 obj->local_qf->metadata->seed);
 				//item = XXH63 (((void*)&item), sizeof(item), seed);
+
+				item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
 
 				/*
 				 * first try and insert in the main QF.
@@ -533,6 +535,13 @@ int main(int argc, char *argv[])
     std::cout << make_man_page(cli, argv[0]) << "\n";
     return 1;
   }
+
+	if (ksize > 32) {
+    cerr << "k-mer size greater than 32 is not supported." << endl;
+    return 1;
+  }
+
+
   switch (in_type) {
   case file_type::fastq: mode = 0; break;
   case file_type::gzip: mode = 1; break;
@@ -597,7 +606,7 @@ int main(int argc, char *argv[])
 	QFi cfi;
 	QF local_qfs[50];
 	uint32_t seed = 2038074761;
-	int num_hash_bits = qbits+8;	// we use 8 bits for remainders in the main QF
+	int num_hash_bits = 2*ksize; // Each base 2 bits.
 	//Initialize the main  QF
 	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, false, ds_file.c_str(), seed);
 	qf_init(&cfM, (1ULL<<qbitsM), num_hash_bits, 0, true, "", seed);
@@ -622,10 +631,10 @@ int main(int argc, char *argv[])
   dump_main_qf_to_disk(obj);
 	//qf_serialize(&cf, ds_file.c_str()); no need because I am using mmap
 	gettimeofday(&end1, &tzp);
-	print_time_elapsed("", &start1, &end1);
+	print_time_elapsed("InsertionTime", &start1, &end1);
 
 	qf_destroy(&cfM, true);
-
+	cout<<"nMerges\t"<<nMerges<<endl;
 
 	cout << "Calc freq distribution: " << endl;
 	ofstream freq_file;
@@ -636,12 +645,12 @@ int main(int argc, char *argv[])
 	do {
 		uint64_t key = 0, value = 0, count = 0;
 		qfi_get(&cfi, &key, &value, &count);
-		freq_file << key << " " << count << endl;
+		freq_file << int_to_str(HashUtil::hash_64i(key,BITMASK(2*ksize)),ksize) << " " << count << endl;
 		if (max_cnt < count)
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
 	gettimeofday(&end2, &tzp);
-	print_time_elapsed("", &start2, &end2);
+	print_time_elapsed("QueryTime", &start2, &end2);
 
 	cout << "Maximum freq: " << max_cnt << endl;
 	freq_file.close();
