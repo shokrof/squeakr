@@ -69,6 +69,8 @@ typedef struct {
 volatile bool main_qf_lock=false;
 volatile uint64_t main_qf_count=0;
 
+bool exactCounting=false;
+
  #define Max_Main_QF_Load_Factor 0.9
 
 struct file_pointer {
@@ -333,7 +335,15 @@ start_read:
 			//item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
 				//														 obj->local_qf->metadata->seed);
 
-			item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
+			if(exactCounting)
+			{
+				item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
+			}
+			else{
+				item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
+																				 obj->local_qf->metadata->seed);
+			}
+
 			/*
 			 * first try and insert in the main QF.
 			 * If lock can't be accuired in the first attempt then
@@ -386,7 +396,14 @@ start_read:
 				//															 obj->local_qf->metadata->seed);
 				//item = XXH63 (((void*)&item), sizeof(item), seed);
 
-				item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
+				if(exactCounting)
+				{
+					item = HashUtil::hash_64(item, BITMASK(2*obj->ksize));
+				}
+				else{
+					item = HashUtil::MurmurHash64A(((void*)&item), sizeof(item),
+																				 obj->local_qf->metadata->seed);
+				}
 
 				/*
 				 * first try and insert in the main QF.
@@ -521,6 +538,7 @@ int main(int argc, char *argv[])
                       required("-g").set(in_type, file_type::gzip) % "gzip compressed fastq",
                       required("-b").set(in_type, file_type::bzip2) % "bzip2 compressed fastq") % "format of the input",
               required("-k","--kmer") & value("k-size", ksize) % "length of k-mers to count",
+							option("-e").set(exactCounting, true) % "exact counting",
               required("-s","--log-slots") & value("log-slots", qbits) % "log of number of slots in the CQF on disk",
 							required("-m","--log-slots-memory") & value("log-slots-memory", qbitsM) % "log of number of slots in the CQF on the memory",
               required("-t","--threads") & value("num-threads", numthreads) % "number of threads to use to count",
@@ -536,8 +554,8 @@ int main(int argc, char *argv[])
     return 1;
   }
 
-	if (ksize > 32) {
-    cerr << "k-mer size greater than 32 is not supported." << endl;
+	if (exactCounting && ksize > 32) {
+    cerr << "k-mer size greater than 32 is not supported for exact counting." << endl;
     return 1;
   }
 
@@ -606,7 +624,13 @@ int main(int argc, char *argv[])
 	QFi cfi;
 	QF local_qfs[50];
 	uint32_t seed = 2038074761;
-	int num_hash_bits = 2*ksize; // Each base 2 bits.
+	int num_hash_bits;
+	if(exactCounting){
+			num_hash_bits = 2*ksize; // Each base 2 bits.
+	}
+	else{
+			num_hash_bits=qbits+8;
+	}
 	//Initialize the main  QF
 	qf_init(&cf, (1ULL<<qbits), num_hash_bits, 0, false, ds_file.c_str(), seed);
 	qf_init(&cfM, (1ULL<<qbitsM), num_hash_bits, 0, true, "", seed);
@@ -645,7 +669,12 @@ int main(int argc, char *argv[])
 	do {
 		uint64_t key = 0, value = 0, count = 0;
 		qfi_get(&cfi, &key, &value, &count);
-		freq_file << int_to_str(HashUtil::hash_64i(key,BITMASK(2*ksize)),ksize) << " " << count << endl;
+		if(exactCounting){
+			freq_file << int_to_str(HashUtil::hash_64i(key,BITMASK(2*ksize)),ksize) << " " << count << endl;
+		}
+		else{
+			freq_file << key << " " << count << endl;
+		}
 		if (max_cnt < count)
 			max_cnt = count;
 	} while (!qfi_next(&cfi));
