@@ -1,5 +1,6 @@
 # squeakr
 [![Build Status](https://travis-ci.org/shokrof/squeakr.svg?branch=mqfDevelopmenet)](https://travis-ci.org/shokrof/squeakr)
+
 Squeakr: An Exact and Approximate k -mer Counting System
 
 This work was published in Bioinformatics. If you use this software please cite us:
