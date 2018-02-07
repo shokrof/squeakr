@@ -9,7 +9,9 @@ os:
 before_install:
 - echo $LANG
 - echo $LC_ALL
-install: sudo apt-get install make automake autotools-dev  libboost1.58-dev libboost-dev libboost-all-dev libssl-dev libbz2-dev
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get install -y make automake autotools-dev  libboost1.58-dev libboost-dev libboost-all-dev libssl-dev libbz2-dev
 branches:
   only:
   - mqfDevelopmenet
