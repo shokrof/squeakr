@@ -33,3 +33,9 @@ squeakr-count
 squeakr-inner-prod
 
 squeakr-query
+
+*.freq
+
+*.ser
+
+cqf_test
