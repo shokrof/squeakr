@@ -1,0 +1,15 @@
+language: cpp
+sudo: required
+dist: trusty
+compiler:
+- g++
+os:
+- linux
+
+before_install:
+- echo $LANG
+- echo $LC_ALL
+install: make get-deps automake autotools-dev g++ libboost1.58-dev libboost-dev libboost-all-dev libssl-dev libbz2-dev
+branches:
+  only:
+  - mqfDevelopmenet
