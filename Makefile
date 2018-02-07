@@ -1,4 +1,5 @@
 TARGETS= squeakr-count squeakr-query squeakr-inner-prod
+TESTS= cqf_test
 
 ifdef D
 	DEBUG=-g
@@ -32,6 +33,7 @@ LDFLAGS += $(DEBUG) $(PROFILE) $(OPT) -lpthread -lboost_system -lboost_thread -l
 
 all: $(TARGETS)
 
+test: $(TESTS)
 # dependencies between programs and .o files
 
 squeakr-count:                  main.o 								 hashutil.o threadsafe-gqf/gqf.o
@@ -57,6 +59,9 @@ threadsafe-gqf/gqf.o: threadsafe-gqf/gqf.c threadsafe-gqf/gqf.h
 $(TARGETS):
 	$(LD) $^ $(LDFLAGS) -o $@
 
+cqf_test: threadsafe-gqf/gqf.c threadsafe-gqf/gqf.h threadsafe-gqf/test.h
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Icatch2/single_include/ -DTEST -o $@ threadsafe-gqf/gqf.c
+
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(INCLUDE) $< -c -o $@
 
@@ -65,4 +70,3 @@ $(TARGETS):
 
 clean:
 	rm -f *.o threadsafe-gqf/gqf.o $(TARGETS)
-
