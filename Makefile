@@ -60,7 +60,7 @@ $(TARGETS):
 	$(LD) $^ $(LDFLAGS) -o $@
 
 cqf_test: threadsafe-gqf/gqf.c threadsafe-gqf/gqf.h threadsafe-gqf/test.h
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -Icatch2/single_include/ -DTEST -o $@ threadsafe-gqf/gqf.c
+	$(CXX) $(CXXFLAGS) $(INCLUDE) -Icatch2/single_include/ -DTEST -fprofile-arcs -ftest-coverage -lgcov -g -o $@ threadsafe-gqf/gqf.c
 
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(INCLUDE) $< -c -o $@
