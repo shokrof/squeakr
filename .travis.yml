@@ -10,14 +10,13 @@ os:
 before_install:
   - sudo apt-get -qq update
   - sudo apt-get install -y make automake autotools-dev  libboost-dev libboost-all-dev libssl-dev libbz2-dev
-  - sudo update-alternatives --install /usr/bin/gcov gcov /usr/bin/gcov-5 90
 script:
   - make test
   - ./cqf_test
-  - gcov-5 -n -o . gqf.c > /dev/null;
+  - gcov -n -o . gqf.c > /dev/null;
 branches:
   only:
   - mqfDevelopmenet
 
-after_success: 
+after_success:
   - bash <(curl -s https://codecov.io/bash)
