@@ -780,8 +780,14 @@ static inline void qf_dump_block(const QF *qf, uint64_t i)
 		printf("%02x ", get_block(qf, i)->slots[j]);
 #endif
 
-	printf("\n");
+	printf("\n fixed counter \n");
 
+	for(int j=0;j<64;j++)
+	{
+		printf("%lu ", get_fixed_counter(qf,j+64*i));
+	}
+
+	printf("\n");
 	printf("\n");
 }
 
@@ -887,6 +893,7 @@ static inline void insert_replace_slots_and_shift_remainders_and_runends_and_off
 																																										 uint64_t		 bucket_index,
 																																										 uint64_t		 overwrite_index,
 																																										 const uint64_t	*remainders,
+																																										 const uint64_t	*fixed_size_counters,
 																																										 uint64_t		 total_remainders,
 																																										 uint64_t		 noverwrites)
 {
@@ -905,10 +912,10 @@ static inline void insert_replace_slots_and_shift_remainders_and_runends_and_off
 
 		for (i = 0; i < ninserts - 1; i++)
 			shift_runends(qf, empties[i+1] + 1, empties[i] - 1, i + 1);
+		shift_runends(qf, insert_index, empties[ninserts - 1] - 1, ninserts);
+
 		for (i = 0; i < ninserts - 1; i++)
 			shift_fixed_counters(qf, empties[i+1] + 1, empties[i] - 1, i + 1);
-
-		shift_runends(qf, insert_index, empties[ninserts - 1] - 1, ninserts);
 		shift_fixed_counters(qf, insert_index, empties[ninserts - 1] - 1, ninserts);
 
 
@@ -957,9 +964,10 @@ static inline void insert_replace_slots_and_shift_remainders_and_runends_and_off
 		}
 	}
 
-	for (i = 0; i < total_remainders; i++)
+	for (i = 0; i < total_remainders; i++){
 		set_slot(qf, overwrite_index + i, remainders[i]);
-
+		set_fixed_counter(qf,overwrite_index +i,fixed_size_counters[i]);
+	}
 
 	modify_metadata(qf, &qf->metadata->noccupied_slots, ninserts);
 }
@@ -969,15 +977,17 @@ static inline void remove_replace_slots_and_shift_remainders_and_runends_and_off
 																																										 uint64_t		 bucket_index,
 																																										 uint64_t		 overwrite_index,
 																																										 const uint64_t	*remainders,
+																																										 const uint64_t	*fcounters,
 																																										 uint64_t		 total_remainders,
-																																										 uint64_t		 old_length)
+																																											 uint64_t		 old_length)
 {
 	uint64_t i;
 
 	// Update the slots
-	for (i = 0; i < total_remainders; i++)
+	for (i = 0; i < total_remainders; i++){
 		set_slot(qf, overwrite_index + i, remainders[i]);
-
+		set_fixed_counter(qf, overwrite_index + i, fcounters[i]);
+	}
 
 
 	// If this is the last thing in its run, then we may need to set a new runend bit
@@ -1094,59 +1104,29 @@ static inline void remove_replace_slots_and_shift_remainders_and_runends_and_off
 	 >3 0s:   0c...c00  for c != 0
 	 */
 static inline uint64_t *encode_counter(QF *qf, uint64_t remainder, uint64_t
-																			 counter, uint64_t *slots)
+																			 counter, uint64_t *slots, uint64_t *fixed_size_counters)
 {
-	uint64_t digit = remainder;
 	uint64_t base = (1ULL << qf->metadata->bits_per_slot) - 1;
 	uint64_t *p = slots;
+	uint64_t fixed_counter_max=(1ULL<<qf->metadata->fixed_counter_size)-1;
 
 	if (counter == 0)
-		return p;
+	 	return p;
+
+	counter--;
+	uint64_t fcounter=std::min(counter,fixed_counter_max);
+	counter-=(fcounter);
+
+
+
+	if(fcounter==fixed_counter_max){
+		*--p = std::min(counter,base);
+		*--fixed_size_counters=0;
+	}
 
 	*--p = remainder;
+	*--fixed_size_counters=fcounter;
 
-	if (counter == 1)
-		return p;
-
-	if (counter == 2) {
-		*--p = remainder;
-		return p;
-	}
-
-	if (counter == 3 && remainder == 0) {
-		*--p = remainder;
-		*--p = remainder;
-		return p;
-	}
-
-	if (counter == 3 && remainder > 0) {
-		*--p = 0;
-		*--p = remainder;
-		return p;
-	}
-
-	if (remainder == 0)
-		*--p = remainder;
-	else
-		base--;
-
-	if (remainder)
-		counter -= 3;
-	else
-		counter -= 4;
-	do {
-		digit = counter % base;
-		digit++; /* Zero not allowed */
-		if (remainder && digit >= remainder)
-			digit++; /* Cannot overflow since digit is mod 2^r-2 */
-		*--p = digit;
-		counter /= base;
-	} while (counter);
-
-	if (remainder && digit >= remainder)
-		*--p = 0;
-
-	*--p = remainder;
 
 	return p;
 }
@@ -1156,73 +1136,17 @@ REQUIRES: index points to first slot of a counter. */
 static inline uint64_t decode_counter(const QF *qf, uint64_t index, uint64_t
 																			*remainder, uint64_t *count)
 {
-	uint64_t base;
-	uint64_t rem;
-	uint64_t cnt;
-	uint64_t digit;
-	uint64_t end;
 
-	*remainder = rem = get_slot(qf, index);
+	*remainder  = get_slot(qf, index);
 
-	if (is_runend(qf, index)) { /* Entire run is "0" */
-		*count = 1;
+	*count=(uint64_t)get_fixed_counter(qf,index)+(uint64_t)1;
+	if(*count == (1ULL << qf->metadata->fixed_counter_size)){
+		*count += get_slot(qf, index + 1);
+		return index+1;
+	}
+	else{
 		return index;
 	}
-
-	digit = get_slot(qf, index + 1);
-
-	if (is_runend(qf, index + 1)) {
-		*count = digit == rem ? 2 : 1;
-		return index + (digit == rem ? 1 : 0);
-	}
-
-	if (rem > 0 && digit >= rem) {
-		*count = digit == rem ? 2 : 1;
-		return index + (digit == rem ? 1 : 0);
-	}
-
-	if (rem > 0 && digit == 0 && get_slot(qf, index + 2) == rem) {
-		*count = 3;
-		return index + 2;
-	}
-
-	if (rem == 0 && digit == 0) {
-		if (get_slot(qf, index + 2) == 0) {
-			*count = 3;
-			return index + 2;
-		} else {
-			*count = 2;
-			return index + 1;
-		}
-	}
-
-	cnt = 0;
-	base = (1ULL << qf->metadata->bits_per_slot) - (rem ? 2 : 1);
-
-	end = index + 1;
-	while (digit != rem && !is_runend(qf, end)) {
-		if (digit > rem)
-			digit--;
-		if (digit && rem)
-			digit--;
-		cnt = cnt * base + digit;
-
-		end++;
-		digit = get_slot(qf, end);
-	}
-
-	if (rem) {
-		*count = cnt + 3;
-		return end;
-	}
-
-	if (is_runend(qf, end) || get_slot(qf, end + 1) != 0) {
-		*count = 1;
-		return index;
-	}
-
-	*count = cnt + 4;
-	return end + 1;
 }
 
 /* return the next slot which corresponds to a
@@ -1495,7 +1419,7 @@ static inline bool insert(QF *qf, __uint128_t hash, uint64_t count, bool lock,
 			return false;
 	}
 
-	uint64_t runend_index             = run_end(qf, hash_bucket_index);
+	uint64_t runend_index = run_end(qf, hash_bucket_index);
 
 	/* Empty slot */
 	if (might_be_empty(qf, hash_bucket_index) && runend_index ==
@@ -1503,6 +1427,7 @@ static inline bool insert(QF *qf, __uint128_t hash, uint64_t count, bool lock,
 		METADATA_WORD(qf, runends, hash_bucket_index) |= 1ULL <<
 			(hash_bucket_block_offset % 64);
 		set_slot(qf, hash_bucket_index, hash_remainder);
+		set_fixed_counter(qf, hash_bucket_index, 0);
 		METADATA_WORD(qf, occupieds, hash_bucket_index) |= 1ULL <<
 			(hash_bucket_block_offset % 64);
 
@@ -1515,17 +1440,21 @@ static inline bool insert(QF *qf, __uint128_t hash, uint64_t count, bool lock,
 		}
 	} else { /* Non-empty slot */
 		uint64_t new_values[67];
+		uint64_t new_fcounters[67];
+		uint64_t total_remainders;
 		int64_t runstart_index = hash_bucket_index == 0 ? 0 : run_end(qf,
 																																	hash_bucket_index
 																																	- 1) + 1;
 
 		if (!is_occupied(qf, hash_bucket_index)) { /* Empty bucket, but its slot is occupied. */
-			uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67]);
+			uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67],&new_fcounters[67]);
+			total_remainders=&new_values[67] - p;
 			insert_replace_slots_and_shift_remainders_and_runends_and_offsets(qf,
 																																				0,
 																																				hash_bucket_index,
 																																				runstart_index,
 																																				p,
+																																				&new_fcounters[67]-total_remainders,
 																																				&new_values[67] - p,
 																																				0);
 			/*modify_metadata(qf, &qf->metadata->ndistinct_elts, 1);*/
@@ -1545,34 +1474,40 @@ static inline bool insert(QF *qf, __uint128_t hash, uint64_t count, bool lock,
 			/* If we reached the end of the run w/o finding a counter for this remainder,
 				 then append a counter for this remainder to the run. */
 			if (current_remainder < hash_remainder) {
-				uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67]);
+				uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67],&new_fcounters[67]);
+				total_remainders=&new_values[67] - p;
 				insert_replace_slots_and_shift_remainders_and_runends_and_offsets(qf,
 																																					1, /* Append to bucket */
 																																					hash_bucket_index,
 																																					current_end + 1,
 																																					p,
+																																					&new_fcounters[67]-total_remainders,
 																																					&new_values[67] - p,
 																																					0);
 				/*modify_metadata(qf, &qf->metadata->ndistinct_elts, 1);*/
 				/* Found a counter for this remainder.  Add in the new count. */
 			} else if (current_remainder == hash_remainder) {
-				uint64_t *p = encode_counter(qf, hash_remainder, current_count + count, &new_values[67]);
+				uint64_t *p = encode_counter(qf, hash_remainder, current_count + count, &new_values[67],&new_fcounters[67]);
+				total_remainders=&new_values[67] - p;
 				insert_replace_slots_and_shift_remainders_and_runends_and_offsets(qf,
 																																					is_runend(qf, current_end) ? 1 : 2,
 																																					hash_bucket_index,
 																																					runstart_index,
 																																					p,
+																																					&new_fcounters[67]-total_remainders,
 																																					&new_values[67] - p,
 																																					current_end - runstart_index + 1);
-				/* No counter for this remainder, but there are larger
+					 /* No counter for this remainder, but there are larger
 					 remainders, so we're not appending to the bucket. */
 			} else {
-				uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67]);
+				uint64_t *p = encode_counter(qf, hash_remainder, count, &new_values[67],&new_fcounters[67]);
+				total_remainders=&new_values[67] - p;
 				insert_replace_slots_and_shift_remainders_and_runends_and_offsets(qf,
 																																					2, /* Insert to bucket */
 																																					hash_bucket_index,
 																																					runstart_index,
 																																					p,
+																																					&new_fcounters[67]-total_remainders,
 																																					&new_values[67] - p,
 																																					0);
 				/*modify_metadata(qf, &qf->metadata->ndistinct_elts, 1);*/
@@ -1596,7 +1531,7 @@ inline static void _remove(QF *qf, __uint128_t hash, uint64_t count)
 	uint64_t hash_bucket_index        = hash >> qf->metadata->bits_per_slot;
 	uint64_t current_remainder, current_count, current_end;
 	uint64_t new_values[67];
-
+  uint64_t new_fcounters[67];
 	/* Empty bucket */
 	if (!is_occupied(qf, hash_bucket_index))
 		return;
@@ -1620,16 +1555,18 @@ inline static void _remove(QF *qf, __uint128_t hash, uint64_t count)
 
 	/* endode the new counter */
 	uint64_t *p = encode_counter(qf, hash_remainder,
-															 count > current_count ? 0 : current_count - count,
-															 &new_values[67]);
+															 count>current_count? 0 : current_count-count,
+															 &new_values[67],&new_fcounters[67]);
+
+	uint64_t total_reminders=&new_values[67] - p;
 	remove_replace_slots_and_shift_remainders_and_runends_and_offsets(qf,
 																																		only_item_in_the_run,
 																																		hash_bucket_index,
 																																		runstart_index,
 																																		p,
-																																		&new_values[67] - p,
+																																		&new_fcounters[67]-total_reminders,
+																																		total_reminders,
 																																		current_end - runstart_index + 1);
-
 	// update the nelements.
 	/*modify_metadata(qf, &qf->metadata->nelts, -count);*/
 	/*qf->metadata->nelts -= count;*/
@@ -1893,7 +1830,7 @@ bool qf_insert(QF *qf, uint64_t key, uint64_t value, uint64_t count, bool
 							 lock, bool spin)
 {
 	/*uint64_t hash = (key << qf->metadata->value_bits) | (value & BITMASK(qf->metadata->value_bits));*/
-	if (count == 1)
+	if (0 && count == 1)
 		return insert1(qf, key, lock, spin);
 	else
 		return insert(qf, key, count, lock, spin);
