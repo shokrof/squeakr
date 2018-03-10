@@ -39,3 +39,9 @@ squeakr-query
 *.ser
 
 cqf_test
+
+ERR1050075_1\.fastq
+
+*.gcda
+
+*.gcno
